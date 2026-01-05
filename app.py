@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
 # --- 1. SETTING UI ---
-st.set_page_config(page_title="Rule-Based Trading System", layout="wide")
+st.set_page_config(page_title="Safe Rule-Based System", layout="wide")
 st.title("🎯 Strict Strategy: MACD + RSI + S/R + Patterns")
 
 # --- 2. SIDEBAR CONFIGURATION ---
@@ -23,50 +23,68 @@ with st.sidebar.expander("Strategy Thresholds"):
 # --- 3. DATA FETCHING ---
 @st.cache_data
 def get_data(ticker, days):
-    start = datetime.now() - timedelta(days=days)
-    data = yf.download(ticker, start=start)
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-    return data
+    try:
+        start = datetime.now() - timedelta(days=days)
+        # ใช้ multi_level_index=False เพื่อป้องกันปัญหา Column ซ้อนกันใน yfinance รุ่นใหม่
+        data = yf.download(ticker, start=start, multi_level_index=False)
+        if data.empty:
+            return None
+        return data
+    except:
+        return None
 
 try:
     df = get_data(symbol, days_back)
 
     if df is not None and len(df) > sr_window:
         # --- CALCULATIONS ---
-        # 1. MACD
+        
+        # 1. MACD (ตรวจสอบ None)
         macd = ta.macd(df['Close'])
-        df = pd.concat([df, macd], axis=1)
-        m_line = macd.columns[0]
-        m_hist = macd.columns[1]
-        m_signal = macd.columns[2]
+        if macd is not None:
+            df = pd.concat([df, macd], axis=1)
+            m_line = macd.columns[0]
+            m_hist = macd.columns[1]
+            m_signal = macd.columns[2]
+        else:
+            st.error("ไม่สามารถคำนวณ MACD ได้ ข้อมูลอาจไม่เพียงพอ")
+            st.stop()
 
         # 2. RSI & Trend
-        df['RSI'] = ta.rsi(df['Close'], length=14)
-        df['RSI_Up'] = df['RSI'] > df['RSI'].shift(1)
+        rsi_series = ta.rsi(df['Close'], length=14)
+        if rsi_series is not None:
+            df['RSI'] = rsi_series
+            df['RSI_Up'] = df['RSI'] > df['RSI'].shift(1)
+        else:
+            st.error("ไม่สามารถคำนวณ RSI ได้")
+            st.stop()
 
-        # 3. Support & Resistance (Rolling)
+        # 3. Support & Resistance
         df['Support'] = df['Low'].rolling(window=sr_window).min()
         df['Resistance'] = df['High'].rolling(window=sr_window).max()
 
-        # 4. Candlestick Patterns (Bullish/Bearish Engulfing)
-        df['Bullish_Engulfing'] = ta.cdl_pattern(df['Open'], df['High'], df['Low'], df['Close'], name="engulfing")['CDL_ENGULFING'] > 0
-        df['Bearish_Engulfing'] = ta.cdl_pattern(df['Open'], df['High'], df['Low'], df['Close'], name="engulfing")['CDL_ENGULFING'] < 0
+        # 4. Candlestick Patterns (จุดที่มักเกิด Error)
+        # แก้ไขโดยการเช็ค None ก่อน Subscript
+        patterns = ta.cdl_pattern(df['Open'], df['High'], df['Low'], df['Close'], name="engulfing")
+        if patterns is not None and 'CDL_ENGULFING' in patterns.columns:
+            df['Bullish_Engulfing'] = patterns['CDL_ENGULFING'] > 0
+            df['Bearish_Engulfing'] = patterns['CDL_ENGULFING'] < 0
+        else:
+            # ถ้าหาไม่เจอหรือ Error ให้กำหนดเป็น False ทั้งหมด
+            df['Bullish_Engulfing'] = False
+            df['Bearish_Engulfing'] = False
 
         # --- 4. STRICT DECISION LOGIC ---
-        
-        # BUY ENTRY: Support + RSI Reversal + MACD Golden Cross
-        cond_buy_price = df['Low'] <= (df['Support'] * 1.02) # ใกล้แนวรับไม่เกิน 2%
+        # BUY ENTRY
+        cond_buy_price = df['Low'] <= (df['Support'] * 1.02)
         cond_buy_rsi = (df['RSI'] < rsi_low) & (df['RSI_Up'])
         cond_buy_macd = (df[m_line] > df[m_signal]) & (df[m_line].shift(1) <= df[m_signal].shift(1))
-        
         df['Final_Buy'] = cond_buy_price & cond_buy_rsi & cond_buy_macd
 
-        # SELL EXIT: Resistance + RSI Overbought + MACD Dead Cross
-        cond_sell_price = df['High'] >= (df['Resistance'] * 0.98) # ใกล้แนวต้านไม่เกิน 2%
+        # SELL EXIT
+        cond_sell_price = df['High'] >= (df['Resistance'] * 0.98)
         cond_sell_rsi = df['RSI'] > rsi_high
         cond_sell_macd = (df[m_line] < df[m_signal]) & (df[m_line].shift(1) >= df[m_signal].shift(1))
-        
         df['Final_Sell'] = cond_sell_price & cond_sell_rsi & cond_sell_macd
 
         # --- 5. VISUALIZATION ---
@@ -74,12 +92,14 @@ try:
 
         # Price Chart
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['Support'], line=dict(color='green', dash='dot'), name='Support'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['Resistance'], line=dict(color='red', dash='dot'), name='Resistance'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Support'], line=dict(color='green', dash='dot', width=1), name='Support'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Resistance'], line=dict(color='red', dash='dot', width=1), name='Resistance'), row=1, col=1)
         
-        # Markers
-        fig.add_trace(go.Scatter(x=df[df['Final_Buy']].index, y=df['Low'][df['Final_Buy']] * 0.98, mode='markers', marker=dict(symbol='star-triangle-up', size=18, color='#00FF00'), name='ENTRY'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df[df['Final_Sell']].index, y=df['High'][df['Final_Sell']] * 1.02, mode='markers', marker=dict(symbol='star-triangle-down', size=18, color='#FF0000'), name='EXIT'), row=1, col=1)
+        # Buy/Sell Markers
+        if df['Final_Buy'].any():
+            fig.add_trace(go.Scatter(x=df[df['Final_Buy']].index, y=df['Low'][df['Final_Buy']] * 0.98, mode='markers', marker=dict(symbol='triangle-up', size=15, color='#00FF00'), name='ENTRY'), row=1, col=1)
+        if df['Final_Sell'].any():
+            fig.add_trace(go.Scatter(x=df[df['Final_Sell']].index, y=df['High'][df['Final_Sell']] * 1.02, mode='markers', marker=dict(symbol='triangle-down', size=15, color='#FF0000'), name='EXIT'), row=1, col=1)
 
         # MACD
         fig.add_trace(go.Scatter(x=df.index, y=df[m_line], line=dict(color='cyan'), name='MACD'), row=2, col=1)
@@ -90,35 +110,28 @@ try:
         fig.add_hline(y=rsi_high, line_dash="dash", line_color="red", row=3, col=1)
         fig.add_hline(y=rsi_low, line_dash="dash", line_color="green", row=3, col=1)
 
-        fig.update_layout(height=850, template="plotly_dark", xaxis_rangeslider_visible=False)
+        fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- 6. DECISION DASHBOARD ---
-        st.subheader("📋 Real-time Strategy Checklist")
+        # --- 6. DASHBOARD ---
+        st.subheader("📋 Strategy Checklist (Latest Bar)")
         last_row = df.iloc[-1]
         
         c1, c2 = st.columns(2)
         with c1:
             st.write("### 🟢 Buy Entry Check")
-            st.checkbox("Price at Support (Near 2% zone)", value=bool(cond_buy_price.iloc[-1]), disabled=True)
-            st.checkbox(f"RSI Reversal (< {rsi_low} & Turning Up)", value=bool(cond_buy_rsi.iloc[-1]), disabled=True)
+            st.checkbox("Price near Support", value=bool(cond_buy_price.iloc[-1]), disabled=True)
+            st.checkbox("RSI Oversold/Reversing", value=bool(cond_buy_rsi.iloc[-1]), disabled=True)
             st.checkbox("MACD Golden Cross", value=bool(cond_buy_macd.iloc[-1]), disabled=True)
-            if last_row['Bullish_Engulfing']: st.success("✨ Pattern Found: Bullish Engulfing!")
 
         with c2:
             st.write("### 🔴 Sell Exit Check")
-            st.checkbox("Price at Resistance (Near 2% zone)", value=bool(cond_sell_price.iloc[-1]), disabled=True)
-            st.checkbox(f"RSI Overbought (> {rsi_high})", value=bool(cond_sell_rsi.iloc[-1]), disabled=True)
+            st.checkbox("Price near Resistance", value=bool(cond_sell_price.iloc[-1]), disabled=True)
+            st.checkbox("RSI Overbought", value=bool(cond_sell_rsi.iloc[-1]), disabled=True)
             st.checkbox("MACD Dead Cross", value=bool(cond_sell_macd.iloc[-1]), disabled=True)
-            if last_row['Bearish_Engulfing']: st.error("⚠️ Pattern Found: Bearish Engulfing!")
-
-        if last_row['Final_Buy']:
-            st.success("🚀 **STRATEGY SIGNAL: BUY ENTRY NOW**")
-        elif last_row['Final_Sell']:
-            st.error("🛑 **STRATEGY SIGNAL: SELL EXIT NOW**")
 
     else:
-        st.info("กรุณาระบุชื่อหุ้นเพื่อเริ่มต้นการวิเคราะห์")
+        st.warning("ไม่พบข้อมูล หรือข้อมูลน้อยเกินไปสำหรับการคำนวณ (ต้องใช้อย่างน้อย 30 แท่ง)")
 
 except Exception as e:
-    st.error(f"ระบบขัดข้อง: {e}")
+    st.error(f"เกิดข้อผิดพลาด: {e}")
