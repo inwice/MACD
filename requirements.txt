@@ -3,5 +3,6 @@ yfinance
 hmmlearn
 plotly
 pandas
+pandas_ta
 numpy
 scikit-learn
