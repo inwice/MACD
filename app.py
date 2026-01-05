@@ -57,83 +57,90 @@ try:
         cond_buy_macd = (df[m_line] > df[m_signal]) & (df[m_line].shift(1) <= df[m_signal].shift(1))
         df['Final_Buy'] = cond_buy_price & cond_buy_rsi & cond_buy_macd
 
-        # --- 5. VISUALIZATION ---
+# --- 5. VISUALIZATION & MAPPING ---
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.5, 0.25, 0.25])
 
-        # Main Chart
+        # กราฟราคา
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"), row=1, col=1)
         
-        # Plot TP/SL for the latest Buy Signal
-        if df['Final_Buy'].any():
-            last_buy_idx = df[df['Final_Buy']].index[-1]
-            entry_price = df.loc[last_buy_idx, 'Close']
-            sl_price = df.loc[last_buy_idx, 'Support'] * (1 - sl_buffer)
-            tp_price = df.loc[last_buy_idx, 'Resistance']
+        # ค้นหาสัญญาณล่าสุดเพื่อแสดง TP/SL
+        has_buy_signal = df['Final_Buy'].any()
+        
+        if has_buy_signal:
+            # ดึงข้อมูลจากแถวที่มีสัญญาณ Buy ล่าสุด
+            last_buy_df = df[df['Final_Buy']]
+            last_buy_idx = last_buy_df.index[-1]
+            entry_price = float(last_buy_df.loc[last_buy_idx, 'Close'])
+            sl_price = float(last_buy_df.loc[last_buy_idx, 'Support'] * (1 - sl_buffer))
+            tp_price = float(last_buy_df.loc[last_buy_idx, 'Resistance'])
             
-            # วาดเส้น TP/SL
-            fig.add_hline(y=tp_price, line_dash="dash", line_color="#00FF00", annotation_text=f"Target TP: {tp_price:.2f}", row=1, col=1)
-            fig.add_hline(y=sl_price, line_dash="dash", line_color="#FF0000", annotation_text=f"Stop Loss: {sl_price:.2f}", row=1, col=1)
+            # วาดเส้น TP/SL บนกราฟ
+            fig.add_hline(y=tp_price, line_dash="dash", line_color="#00FF00", 
+                          annotation_text=f"Target TP: {tp_price:.2f}", row=1, col=1)
+            fig.add_hline(y=sl_price, line_dash="dash", line_color="#FF0000", 
+                          annotation_text=f"Stop Loss: {sl_price:.2f}", row=1, col=1)
             
-            # แสดงลูกศรจุดซื้อ
-            fig.add_trace(go.Scatter(x=df[df['Final_Buy']].index, y=df['Low'][df['Final_Buy']] * 0.97, 
+            # วาดจุด Buy
+            fig.add_trace(go.Scatter(x=last_buy_df.index, y=last_buy_df['Low'] * 0.97, 
                                      mode='markers', marker=dict(symbol='triangle-up', size=15, color='#00FF00'), name='BUY ENTRY'), row=1, col=1)
 
-        # MACD & Zero Line
+        # วาดเส้น MACD และ RSI (เหมือนเดิม)
         fig.add_trace(go.Scatter(x=df.index, y=df[m_line], line=dict(color='cyan'), name='MACD'), row=2, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df[m_signal], line=dict(color='orange'), name='Signal'), row=2, col=1)
         fig.add_hline(y=0, line_color="white", opacity=0.5, row=2, col=1)
-
-        # RSI
         fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='magenta'), name='RSI'), row=3, col=1)
-        fig.add_hline(y=70, line_dash="dot", line_color="red", row=3, col=1)
-        fig.add_hline(y=50, line_dash="dash", line_color="gray", row=3, col=1)
-        fig.add_hline(y=30, line_dash="dot", line_color="green", row=3, col=1)
-
-        fig.update_layout(height=850, template="plotly_dark", xaxis_rangeslider_visible=False)
+        
+        fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- 6. ADVISORY DASHBOARD ---
+        # --- 6. ADVISORY DASHBOARD (จุดที่แก้ไขการแสดงผล) ---
+        st.divider()
         st.subheader("🛡️ Trade Manager & Risk Analysis")
         
         curr = df.iloc[-1]
-        prev = df.iloc[-2]
-        
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.info("🔍 สถานะปัจจุบัน (Trend Check)")
+            st.markdown("#### 🔍 Trend Status")
             if curr[m_line] > 0 and curr['RSI'] > 50:
-                st.success("✅ **ถือต่อ (Run Trend)**\n\nMACD > 0 และ RSI ยืนเหนือ 50 ได้มั่นคง")
+                st.success("✅ **สถานะ: ถือต่อ (Run Trend)**\n\nโมเมนตัมขาขึ้นชัดเจน")
             elif curr[m_line] < 0:
-                st.warning("⚠️ **เทรนด์อ่อนแอ**\n\nMACD ยังอยู่ใต้ Zero Line")
+                st.error("📉 **สถานะ: ขาลง/อ่อนแอ**\n\nMACD ต่ำกว่าเส้น Zero Line")
             else:
-                st.write("สถานะ: รอเลือกทาง")
+                st.info("🔄 **สถานะ: ไซด์เวย์**\n\nรอการเลือกทาง")
 
         with col2:
-            st.error("🚨 สัญญาณอันตราย (Emergency)")
+            st.markdown("#### 🚨 Warning Signals")
             if curr['Is_Rejection']:
-                st.markdown("🛑 **รีบขายทันที!**\n\nพบแรงเทขาย (Rejection) ที่แนวต้าน")
-            if curr['RSI'] > 70 and curr[m_line] < prev[m_line]:
-                st.markdown("🛑 **Overbought + MACD Curve Down**\n\nความแรงเริ่มลดลงระวังการปรับตัว")
+                st.warning("⚠️ **พบ Rejection!**\n\nมีแรงขายทิ้งไส้ที่แนวต้าน")
+            elif curr['RSI'] > 70:
+                st.warning("⚠️ **Overbought**\n\nราคาตึงเกินไป ระวังย่อ")
             else:
-                st.write("ยังไม่พบสัญญาณจบคะแนนลบ")
+                st.write("✅ สัญญาณปกติดี")
 
         with col3:
-            st.success("💰 Risk Control (Latest Signal)")
-            if df['Final_Buy'].any():
-                buy_row = df[df['Final_Buy']].iloc[-1]
-                entry = buy_row['Close']
-                tp = buy_row['Resistance']
-                sl = buy_row['Support'] * (1 - sl_buffer)
-                rr = (tp - entry) / (entry - sl) if (entry - sl) != 0 else 0
+            st.markdown("#### 💰 Risk Control")
+            if has_buy_signal:
+                # คำนวณจากสัญญาณล่าสุดที่พบในประวัติ
+                last_buy_row = df[df['Final_Buy']].iloc[-1]
+                entry = float(last_buy_row['Close'])
+                tp = float(last_buy_row['Resistance'])
+                sl = float(last_buy_row['Support'] * (1 - sl_buffer))
                 
+                # ป้องกัน Division by Zero
+                risk = entry - sl
+                reward = tp - entry
+                rr = reward / risk if risk > 0 else 0
+                
+                st.write(f"**สัญญาณล่าสุดเมื่อ:** {df[df['Final_Buy']].index[-1].strftime('%Y-%m-%d')}")
                 st.write(f"**Entry:** {entry:,.2f}")
-                st.write(f"**Take Profit:** {tp:,.2f}")
+                st.write(f"**Target TP:** {tp:,.2f}")
                 st.write(f"**Stop Loss:** {sl:,.2f}")
-                st.metric("Risk:Reward Ratio", f"1:{rr:.2f}")
                 
-                if rr < min_rr:
-                    st.warning("⚠️ ไม่คุ้มเสี่ยง: RR Ratio ต่ำกว่าที่กำหนด")
+                color = "green" if rr >= min_rr else "red"
+                st.markdown(f"**Risk:Reward:** <span style='color:{color}'>1:{rr:.2f}</span>", unsafe_allow_html=True)
+            else:
+                st.info("⌛ **ยังไม่พบสัญญาณซื้อ**\n\nตามเงื่อนไข (Support + RSI + MACD)")
 
     else:
         st.warning("กรุณากรอก Ticker ให้ถูกต้อง")
